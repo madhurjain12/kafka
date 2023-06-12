@@ -1,0 +1,111 @@
+package com.optum.clm.avroutils;
+
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Properties;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import org.apache.avro.Schema;
+import org.apache.avro.file.DataFileWriter;
+import org.apache.avro.generic.GenericDatumWriter;
+import org.apache.avro.generic.GenericRecord;
+import org.apache.kafka.clients.CommonClientConfigs;
+import org.apache.kafka.clients.consumer.Consumer;
+import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.apache.kafka.clients.consumer.ConsumerRecords;
+import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.common.config.SslConfigs;
+
+import io.confluent.kafka.serializers.KafkaAvroDeserializer;
+
+public class DemoConsumer {
+
+  public static void main(String[] args) throws InterruptedException, IOException {
+    runConsumer();
+  }
+
+  static void runConsumer() throws InterruptedException, IOException {
+    final Consumer<GenericRecord, GenericRecord> consumer = createConsumer();
+
+    AtomicInteger noRecordsCount = new AtomicInteger();
+    int maxRecordCount = 10000;
+
+    List<GenericRecord> genericRecordList = new ArrayList<>();
+
+    while (noRecordsCount.get() < maxRecordCount) {
+      final ConsumerRecords<GenericRecord, GenericRecord> consumerRecords = consumer.poll(100000);
+
+      consumerRecords.forEach(
+          record -> {
+            System.out.printf(
+                "Consumer Record:(%s, %s, %d, %d)\n",
+                record.key(), record.value(), record.partition(), record.offset());
+            genericRecordList.add(record.value());
+            noRecordsCount.getAndIncrement();
+          });
+
+      consumer.commitAsync();
+    }
+    writeAvroToFile(genericRecordList);
+  }
+
+  public static void writeAvroToFile(List<GenericRecord> genericRecordList) {
+    try {
+      Schema schema =
+          new Schema.Parser()
+              .parse(new File("/Users/mjain34/code/avroutils/src/main/resources/claims.avsc"));
+      DataFileWriter<GenericRecord> dataFileWriter =
+          new DataFileWriter<>(new GenericDatumWriter<>(schema));
+      ByteArrayOutputStream stream = new ByteArrayOutputStream();
+      dataFileWriter.create(
+          schema, new File("/Users/mjain34/code/avroutils/src/main/resources/file0517.avro"));
+      for (GenericRecord record : genericRecordList) {
+        dataFileWriter.append(record);
+      }
+      dataFileWriter.close();
+    } catch (IOException e) {
+      throw new UncheckedIOException("Failed to convert to Avro.", e);
+    }
+  }
+
+  private static Consumer<GenericRecord, GenericRecord> createConsumer() {
+    final Properties kafkaProperties = new Properties();
+    kafkaProperties.put(
+        ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG,
+        "claims360-prod-kafka-0-client.claims360.svc.prod1-us-east1.gke.kaas-prod-us.gcp.extscloud.com:16516");
+    kafkaProperties.put(ConsumerConfig.GROUP_ID_CONFIG, "qai-aible-prod");
+    kafkaProperties.put(
+        ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, KafkaAvroDeserializer.class.getName());
+    kafkaProperties.put(
+        ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, KafkaAvroDeserializer.class.getName());
+    kafkaProperties.put("schema.registry.url", "http://kaas-prod-schema-registry-a.optum.com");
+    //    kafkaProperties.put("specific.avro.reader", "true");
+    kafkaProperties.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
+
+    kafkaProperties.put(CommonClientConfigs.SECURITY_PROTOCOL_CONFIG, "SSL");
+
+    kafkaProperties.put(
+        SslConfigs.SSL_TRUSTSTORE_LOCATION_CONFIG,
+        "/Users/mjain34/code/avroutils/src/main/resources/claimcerts/truststore.jks");
+    kafkaProperties.put(SslConfigs.SSL_TRUSTSTORE_PASSWORD_CONFIG, "prmcert");
+    kafkaProperties.put(
+        SslConfigs.SSL_KEYSTORE_LOCATION_CONFIG,
+        "/Users/mjain34/code/avroutils/src/main/resources/claimcerts/keystore.jks");
+    kafkaProperties.put(SslConfigs.SSL_KEYSTORE_PASSWORD_CONFIG, "prmcert");
+    kafkaProperties.put(SslConfigs.SSL_KEY_PASSWORD_CONFIG, "prmcert");
+    //    kafkaProperties.put(KafkaAvroDeserializerConfig.SPECIFIC_AVRO_READER_CONFIG, true);
+
+    // Create the consumer using props.
+    final Consumer<GenericRecord, GenericRecord> consumer = new KafkaConsumer<>(kafkaProperties);
+
+    // Subscribe to the topic.
+    consumer.subscribe(
+        Collections.singletonList("hcp.as-submitted.c360-prod.data.claims.claim-submitted.v1"));
+    return consumer;
+  }
+}
